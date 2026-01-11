@@ -19,12 +19,16 @@ export default function LandingScreen({ navigation }) {
                 contentContainerStyle={styles.scrollContent}
                 showsVerticalScrollIndicator={true}
                 nestedScrollEnabled={true}
-            >
-                <View style={[styles.header, { alignItems: 'flex-start' }]}>
+                    >
+                <View style={styles.header}>
                     <TouchableOpacity onPress={() => navigation.navigate('Landing')}>
-                        <Image source={require('../assets/pilahub_logo.png')} style={{ width: 200, height: 80, resizeMode: 'contain' }} />
+                        <Image
+                            source={require('../assets/pilahub_logo.png')}
+                            style={{ width: 130, height: 80, resizeMode: 'contain' }}
+                        />
                     </TouchableOpacity>
-                </View>
+                 </View>
+
 
                 {/* Hero Section */}
                 <View style={styles.section}>
@@ -95,14 +99,20 @@ const styles = StyleSheet.create({
         ...(Platform.OS === 'web' ? { paddingBottom: 40 } : {}),
     },
     header: {
-        paddingTop: 60,
-        paddingHorizontal: 24,
-        paddingBottom: 24,
-    },
+    flexDirection: 'row',
+    justifyContent: 'flex-start',
+    alignItems: 'center',
+    paddingTop: 60,
+    paddingHorizontal: 0,   // completely flush
+    paddingBottom: 24,
+},
+
+
     logo: {
         fontSize: 18,
         fontWeight: '600',
         color: '#1F2937',
+        
     },
     section: {
         paddingHorizontal: 24,
