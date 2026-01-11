@@ -1,20 +1,29 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Modal, Dimensions, StatusBar } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Modal, Dimensions, StatusBar, Platform, TextInput, KeyboardAvoidingView, Image } from 'react-native';
 import { db } from '../firebaseConfig';
 import { collection, query, orderBy, onSnapshot, doc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
 import QRCode from 'react-native-qrcode-svg';
 import * as Haptics from 'expo-haptics';
+import { Ionicons } from '@expo/vector-icons';
+import CustomModal from '../components/CustomModal';
 
-const { width } = Dimensions.get('window');
+const { width, height } = Dimensions.get('window');
+const ADMIN_PASSWORD = 'admin123'; // Default password
 
 export default function AdminScreen({ navigation }) {
+    const [isAuthenticated, setIsAuthenticated] = useState(false);
+    const [passwordInput, setPasswordInput] = useState('');
+    const [passwordError, setPasswordError] = useState(false);
     const [queue, setQueue] = useState([]);
     const [showQR, setShowQR] = useState(false);
     const [isMonitorMode, setIsMonitorMode] = useState(false);
     const [stats, setStats] = useState({ waiting: 0, served: 0 });
     const [nowServingNumber, setNowServingNumber] = useState(null);
+    const [resetModalVisible, setResetModalVisible] = useState(false);
 
     useEffect(() => {
+        if (!isAuthenticated) return;
+
         const q = query(collection(db, "queue"), orderBy("timestamp", "asc"));
         const unsubscribe = onSnapshot(q, (querySnapshot) => {
             const tickets = [];
@@ -34,19 +43,47 @@ export default function AdminScreen({ navigation }) {
             setNowServingNumber(currentServing);
         });
         return () => unsubscribe();
-    }, []);
+    }, [isAuthenticated]);
+
+    const handleLogin = () => {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        if (passwordInput === ADMIN_PASSWORD) {
+            setIsAuthenticated(true);
+            setPasswordError(false);
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } else {
+            setPasswordError(true);
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        }
+    };
 
     const notifyUser = async (id) => {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-        await updateDoc(doc(db, "queue", id), { notification: Date.now() });
-        Alert.alert("Sent", "Notification sent to user.");
+        try {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            await updateDoc(doc(db, "queue", id), { notification: Date.now() });
+            if (Platform.OS === 'web') {
+                window.alert("Notification sent to user.");
+            } else {
+                Alert.alert("Sent", "Notification sent to user.");
+            }
+        } catch (error) {
+            console.error("Notify failed:", error);
+            Alert.alert("Error", "Failed to send notification.");
+        }
     };
 
     const callNext = async () => {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         const servingTickets = queue.filter(t => t.status === 'serving');
         for (const ticket of servingTickets) {
-            await updateDoc(doc(db, "queue", ticket.id), { status: 'done' });
+            const servedAt = new Date();
+            const joinedAt = ticket.timestamp?.toDate?.() || new Date();
+            const waitTime = Math.round((servedAt - joinedAt) / 60000); // minutes
+            await updateDoc(doc(db, "queue", ticket.id), {
+                status: 'done',
+                servedAt: servedAt,
+                waitTime: waitTime
+            });
         }
 
         const nextTicket = queue.find(t => t.status === 'waiting');
@@ -60,30 +97,39 @@ export default function AdminScreen({ navigation }) {
 
     const completeServing = async (id) => {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        await updateDoc(doc(db, "queue", id), { status: 'done' });
+        const ticket = queue.find(t => t.id === id);
+        const servedAt = new Date();
+        const joinedAt = ticket?.timestamp?.toDate?.() || new Date();
+        const waitTime = Math.round((servedAt - joinedAt) / 60000);
+        await updateDoc(doc(db, "queue", id), {
+            status: 'done',
+            servedAt: servedAt,
+            waitTime: waitTime
+        });
     };
 
-    const resetQueue = async () => {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-        Alert.alert(
-            "Reset Queue",
-            "Are you sure? This will delete all tickets.",
-            [
-                { text: "Cancel", style: "cancel" },
-                {
-                    text: "Reset",
-                    style: "destructive",
-                    onPress: async () => {
-                        const q = query(collection(db, "queue"));
-                        const snapshot = await getDocs(q);
-                        snapshot.forEach(async (d) => {
-                            await deleteDoc(doc(db, "queue", d.id));
-                        });
-                        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                    }
-                }
-            ]
-        );
+    const resetQueue = () => {
+        if (Platform.OS !== 'web') {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        }
+        setResetModalVisible(true);
+    };
+
+    const confirmResetQueue = async () => {
+        try {
+            const q = query(collection(db, "queue"));
+            const snapshot = await getDocs(q);
+            const deletePromises = snapshot.docs.map((d) =>
+                deleteDoc(doc(db, "queue", d.id))
+            );
+            await Promise.all(deletePromises);
+            if (Platform.OS !== 'web') {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            }
+        } catch (error) {
+            console.error("Reset failed:", error);
+        }
+        setResetModalVisible(false);
     };
 
     const renderItem = (item) => {
@@ -94,18 +140,23 @@ export default function AdminScreen({ navigation }) {
             <View key={item.id} style={[styles.queueItem, isServing && styles.queueItemServing, isDone && styles.queueItemDone]}>
                 <View style={styles.queueItemLeft}>
                     <Text style={[styles.queueNumber, isServing && styles.queueNumberServing]}>#{item.ticketNumber}</Text>
-                    <View style={[styles.statusBadge, isServing && styles.statusBadgeServing, isDone && styles.statusBadgeDone]}>
+                    <View style={[styles.statusBadge, isServing && styles.statusBadgeServing, isDone && styles.statusBadgeDone, { marginLeft: 12 }]}>
                         <Text style={[styles.statusText, isServing && styles.statusTextServing, isDone && styles.statusTextDone]}>
                             {item.status.toUpperCase()}
                         </Text>
                     </View>
+                    {item.serviceType && (
+                        <View style={[styles.serviceTypeBadge, { marginLeft: 8 }]}>
+                            <Text style={styles.serviceTypeText}>{item.serviceType}</Text>
+                        </View>
+                    )}
                 </View>
                 {isServing && (
                     <View style={styles.actionButtons}>
                         <TouchableOpacity style={styles.notifyButton} onPress={() => notifyUser(item.id)}>
-                            <Text style={styles.notifyButtonText}>🔔</Text>
+                            <Ionicons name="notifications" size={18} color="#FFFFFF" />
                         </TouchableOpacity>
-                        <TouchableOpacity style={styles.doneButton} onPress={() => completeServing(item.id)}>
+                        <TouchableOpacity style={[styles.doneButton, { marginLeft: 8 }]} onPress={() => completeServing(item.id)}>
                             <Text style={styles.doneButtonText}>Done</Text>
                         </TouchableOpacity>
                     </View>
@@ -113,6 +164,57 @@ export default function AdminScreen({ navigation }) {
             </View>
         );
     };
+
+    // Login Screen
+    if (!isAuthenticated) {
+        return (
+            <KeyboardAvoidingView
+                style={styles.container}
+                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            >
+                <StatusBar barStyle="dark-content" />
+
+                <View style={styles.header}>
+                    <View style={[styles.headerTop, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}>
+                        <TouchableOpacity onPress={() => navigation.navigate('Landing')}>
+                            <Image source={require('../assets/pilahub_logo.png')} style={{ width: 200, height: 80, resizeMode: 'contain' }} />
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.closeButton}>
+                            <Text style={styles.closeIcon}>×</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+
+                <View style={styles.loginContainer}>
+                    <View style={styles.lockIcon}>
+                        <Ionicons name="lock-closed" size={36} color="#0D9488" />
+                    </View>
+                    <Text style={styles.loginTitle}>Admin Access</Text>
+                    <Text style={styles.loginSubtitle}>Enter password to continue</Text>
+
+                    <TextInput
+                        style={[styles.passwordInput, passwordError && styles.passwordInputError]}
+                        placeholder="Enter password"
+                        placeholderTextColor="#9CA3AF"
+                        secureTextEntry
+                        value={passwordInput}
+                        onChangeText={(text) => {
+                            setPasswordInput(text);
+                            setPasswordError(false);
+                        }}
+                        onSubmitEditing={handleLogin}
+                    />
+                    {passwordError && (
+                        <Text style={styles.errorText}>Incorrect password</Text>
+                    )}
+
+                    <TouchableOpacity style={styles.loginButton} onPress={handleLogin}>
+                        <Text style={styles.loginButtonText}>Login</Text>
+                    </TouchableOpacity>
+                </View>
+            </KeyboardAvoidingView>
+        );
+    }
 
     // Monitor Mode
     if (isMonitorMode) {
@@ -140,8 +242,10 @@ export default function AdminScreen({ navigation }) {
 
             {/* Header */}
             <View style={styles.header}>
-                <View style={styles.headerTop}>
-                    <Text style={styles.logo}>PilaHub</Text>
+                <View style={[styles.headerTop, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}>
+                    <TouchableOpacity onPress={() => navigation.navigate('Landing')}>
+                        <Image source={require('../assets/pilahub_logo.png')} style={{ width: 200, height: 80, resizeMode: 'contain' }} />
+                    </TouchableOpacity>
                     <TouchableOpacity onPress={() => navigation.goBack()} style={styles.closeButton}>
                         <Text style={styles.closeIcon}>×</Text>
                     </TouchableOpacity>
@@ -149,52 +253,82 @@ export default function AdminScreen({ navigation }) {
                 <Text style={styles.headerTitle}>Admin Dashboard</Text>
             </View>
 
-            {/* Stats */}
-            <View style={styles.statsContainer}>
-                <View style={styles.statCard}>
-                    <Text style={styles.statValue}>{stats.waiting}</Text>
-                    <Text style={styles.statLabel}>Waiting</Text>
+            {/* Dashboard Content */}
+            <View style={styles.content}>
+                {/* Stats */}
+                <View style={styles.statsContainer}>
+                    <View style={styles.statCard}>
+                        <Text style={styles.statValue}>{stats.waiting}</Text>
+                        <Text style={styles.statLabel}>Waiting</Text>
+                    </View>
+                    <View style={styles.statCard}>
+                        <Text style={styles.statValue}>{stats.served}</Text>
+                        <Text style={styles.statLabel}>Served</Text>
+                    </View>
+                    <View style={[styles.statCard, styles.statCardHighlight]}>
+                        <Text style={[styles.statValue, styles.statValueHighlight]}>{nowServingNumber || '-'}</Text>
+                        <Text style={[styles.statLabel, styles.statLabelHighlight]}>Now Serving</Text>
+                    </View>
                 </View>
-                <View style={styles.statCard}>
-                    <Text style={styles.statValue}>{stats.served}</Text>
-                    <Text style={styles.statLabel}>Served</Text>
-                </View>
-                <View style={[styles.statCard, styles.statCardHighlight]}>
-                    <Text style={[styles.statValue, styles.statValueHighlight]}>{nowServingNumber || '-'}</Text>
-                    <Text style={[styles.statLabel, styles.statLabelHighlight]}>Now Serving</Text>
-                </View>
-            </View>
 
-            {/* Controls */}
-            <View style={styles.controls}>
-                <TouchableOpacity style={styles.primaryButton} onPress={callNext}>
-                    <Text style={styles.primaryButtonText}>Call Next</Text>
-                </TouchableOpacity>
-                <View style={styles.controlRow}>
-                    <TouchableOpacity style={styles.secondaryButton} onPress={() => setShowQR(true)}>
-                        <Text style={styles.secondaryButtonText}>Show QR</Text>
+                {/* Controls */}
+                <View style={styles.controls}>
+                    <TouchableOpacity style={styles.primaryButton} onPress={callNext}>
+                        <Text style={styles.primaryButtonText}>Call Next</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.secondaryButton} onPress={() => setIsMonitorMode(true)}>
-                        <Text style={styles.secondaryButtonText}>Monitor</Text>
+                    <View style={styles.controlRow}>
+                        <TouchableOpacity style={styles.secondaryButton} onPress={() => setShowQR(true)}>
+                            <Text style={styles.secondaryButtonText}>Show QR</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.secondaryButton} onPress={() => setIsMonitorMode(true)}>
+                            <Text style={styles.secondaryButtonText}>Monitor</Text>
+                        </TouchableOpacity>
+                    </View>
+                    <View style={styles.controlRow}>
+                        <TouchableOpacity style={styles.secondaryButtonWithIcon} onPress={() => navigation.navigate('ServiceSetup')}>
+                            <Ionicons name="settings-outline" size={18} color="#374151" />
+                            <Text style={[styles.secondaryButtonText, { marginLeft: 6 }]}>Services</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.secondaryButtonWithIcon} onPress={() => navigation.navigate('Analytics')}>
+                            <Ionicons name="bar-chart-outline" size={18} color="#374151" />
+                            <Text style={[styles.secondaryButtonText, { marginLeft: 6 }]}>Analytics</Text>
+                        </TouchableOpacity>
+                    </View>
+                    <TouchableOpacity style={[styles.secondaryButton, { borderColor: '#FEE2E2', backgroundColor: '#FEF2F2', marginTop: 8, marginHorizontal: 0 }]} onPress={resetQueue}>
+                        <Text style={[styles.secondaryButtonText, { color: '#DC2626' }]}>Reset Queue</Text>
                     </TouchableOpacity>
                 </View>
-            </View>
 
-            {/* Queue List */}
-            <View style={styles.listSection}>
-                <Text style={styles.sectionTitle}>Queue</Text>
-                <ScrollView style={styles.list} contentContainerStyle={{ paddingBottom: 100 }} showsVerticalScrollIndicator={true}>
-                    {queue.map((item) => renderItem(item))}
-                    {queue.length === 0 && (
-                        <Text style={styles.emptyText}>No tickets in queue</Text>
+                {/* Queue List */}
+                <View style={styles.listSection}>
+                    <Text style={styles.sectionTitle}>Queue</Text>
+                    {Platform.OS === 'web' ? (
+                        <View style={{ height: 400, overflowY: 'auto', width: '100%', borderRadius: 12, backgroundColor: '#fff' }}>
+                            <View style={{ paddingBottom: 20 }}>
+                                {queue.map((item) => renderItem(item))}
+                                {queue.length === 0 && (
+                                    <Text style={styles.emptyText}>No tickets in queue</Text>
+                                )}
+                            </View>
+                        </View>
+                    ) : (
+                        <View style={styles.listWrapper}>
+                            <ScrollView
+                                style={styles.list}
+                                contentContainerStyle={{ paddingBottom: 20 }}
+                                showsVerticalScrollIndicator={true}
+                            >
+                                {queue.map((item) => renderItem(item))}
+                                {queue.length === 0 && (
+                                    <Text style={styles.emptyText}>No tickets in queue</Text>
+                                )}
+                            </ScrollView>
+                        </View>
                     )}
-                </ScrollView>
-            </View>
+                </View>
 
-            {/* Reset Button */}
-            <TouchableOpacity style={styles.resetButton} onPress={resetQueue}>
-                <Text style={styles.resetButtonText}>Reset Queue</Text>
-            </TouchableOpacity>
+
+            </View>
 
             {/* QR Modal */}
             <Modal visible={showQR} animationType="fade" transparent={true}>
@@ -210,6 +344,18 @@ export default function AdminScreen({ navigation }) {
                     </View>
                 </View>
             </Modal>
+
+            {/* Reset Queue Confirmation Modal */}
+            <CustomModal
+                visible={resetModalVisible}
+                type="warning"
+                title="Reset Queue"
+                message="Are you sure you want to reset the queue? This will delete all tickets and cannot be undone."
+                confirmText="Reset"
+                cancelText="Cancel"
+                onConfirm={confirmResetQueue}
+                onCancel={() => setResetModalVisible(false)}
+            />
         </View>
     );
 }
@@ -218,6 +364,9 @@ const styles = StyleSheet.create({
     container: {
         flex: 1,
         backgroundColor: '#FFFFFF',
+    },
+    content: {
+        flex: 1,
     },
     header: {
         paddingTop: 60,
@@ -249,10 +398,73 @@ const styles = StyleSheet.create({
         fontWeight: '700',
         color: '#1F2937',
     },
+    // Login Styles
+    loginContainer: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        paddingHorizontal: 40,
+    },
+    lockIcon: {
+        width: 80,
+        height: 80,
+        borderRadius: 40,
+        backgroundColor: '#F3F4F6',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 24,
+    },
+    lockEmoji: {
+        fontSize: 36,
+    },
+    loginTitle: {
+        fontSize: 24,
+        fontWeight: '700',
+        color: '#1F2937',
+        marginBottom: 8,
+    },
+    loginSubtitle: {
+        fontSize: 16,
+        color: '#6B7280',
+        marginBottom: 32,
+    },
+    passwordInput: {
+        width: '100%',
+        backgroundColor: '#F9FAFB',
+        padding: 16,
+        borderRadius: 12,
+        fontSize: 16,
+        color: '#1F2937',
+        borderWidth: 1,
+        borderColor: '#E5E7EB',
+        textAlign: 'center',
+        marginBottom: 16,
+    },
+    passwordInputError: {
+        borderColor: '#EF4444',
+        backgroundColor: '#FEF2F2',
+    },
+    errorText: {
+        color: '#EF4444',
+        fontSize: 14,
+        marginBottom: 16,
+    },
+    loginButton: {
+        width: '100%',
+        backgroundColor: '#1F2937',
+        paddingVertical: 16,
+        borderRadius: 12,
+        alignItems: 'center',
+    },
+    loginButtonText: {
+        color: '#FFFFFF',
+        fontSize: 16,
+        fontWeight: '600',
+    },
+    // Stats
     statsContainer: {
         flexDirection: 'row',
-        paddingHorizontal: 24,
-        gap: 12,
+        paddingHorizontal: 18,
         marginBottom: 24,
     },
     statCard: {
@@ -263,6 +475,7 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         borderWidth: 1,
         borderColor: '#E5E7EB',
+        marginHorizontal: 6,
     },
     statCardHighlight: {
         backgroundColor: '#0D9488',
@@ -302,7 +515,7 @@ const styles = StyleSheet.create({
     },
     controlRow: {
         flexDirection: 'row',
-        gap: 12,
+        marginBottom: 8,
     },
     secondaryButton: {
         flex: 1,
@@ -311,15 +524,28 @@ const styles = StyleSheet.create({
         paddingVertical: 14,
         borderRadius: 8,
         alignItems: 'center',
+        marginHorizontal: 6,
     },
     secondaryButtonText: {
         color: '#374151',
         fontSize: 14,
         fontWeight: '600',
     },
+    secondaryButtonWithIcon: {
+        flex: 1,
+        borderWidth: 1,
+        borderColor: '#E5E7EB',
+        paddingVertical: 14,
+        borderRadius: 8,
+        alignItems: 'center',
+        flexDirection: 'row',
+        justifyContent: 'center',
+        marginHorizontal: 6,
+    },
     listSection: {
         flex: 1,
         paddingHorizontal: 24,
+        minHeight: 0,
     },
     sectionTitle: {
         fontSize: 18,
@@ -327,8 +553,15 @@ const styles = StyleSheet.create({
         color: '#1F2937',
         marginBottom: 12,
     },
+    listWrapper: {
+        flex: 1,
+        borderRadius: 12,
+        overflow: 'hidden',
+        ...(Platform.OS === 'web' ? { height: '50vh' } : {}),
+    },
     list: {
         flex: 1,
+        ...(Platform.OS === 'web' ? { overflowY: 'auto', height: '100%' } : {}),
     },
     queueItem: {
         backgroundColor: '#F9FAFB',
@@ -351,7 +584,6 @@ const styles = StyleSheet.create({
     queueItemLeft: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 12,
     },
     queueNumber: {
         fontSize: 20,
@@ -385,10 +617,20 @@ const styles = StyleSheet.create({
     statusTextDone: {
         color: '#065F46',
     },
+    serviceTypeBadge: {
+        backgroundColor: '#E0E7FF',
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        borderRadius: 8,
+    },
+    serviceTypeText: {
+        fontSize: 10,
+        fontWeight: '600',
+        color: '#4338CA',
+    },
     actionButtons: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 8,
     },
     notifyButton: {
         backgroundColor: 'rgba(255,255,255,0.2)',
@@ -419,10 +661,9 @@ const styles = StyleSheet.create({
         marginTop: 40,
     },
     resetButton: {
-        position: 'absolute',
-        bottom: 30,
-        left: 24,
-        right: 24,
+        marginTop: 16,
+        marginHorizontal: 24,
+        marginBottom: 30,
         backgroundColor: '#FEE2E2',
         paddingVertical: 14,
         borderRadius: 8,

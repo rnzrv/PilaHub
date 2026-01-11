@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions, StatusBar } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Dimensions, StatusBar, Image } from 'react-native';
 import * as Haptics from 'expo-haptics';
 
 const { width } = Dimensions.get('window');
@@ -15,8 +15,10 @@ export default function HomeScreen({ navigation }) {
             <StatusBar barStyle="dark-content" />
 
             {/* Header */}
-            <View style={styles.header}>
-                <Text style={styles.logo}>PilaHub</Text>
+            <View style={[styles.header, { alignItems: 'flex-start' }]}>
+                <TouchableOpacity onPress={() => navigation.navigate('Landing')}>
+                    <Image source={require('../assets/pilahub_logo.png')} style={{ width: 200, height: 80, resizeMode: 'contain' }} />
+                </TouchableOpacity>
             </View>
 
             {/* Main Content */}
